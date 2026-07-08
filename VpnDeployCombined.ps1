@@ -314,13 +314,15 @@ Need-Command "pscp"
 Write-Host ""
 Write-Host "模式："
 Write-Host "  1) 部署 / 重新部署 WireGuard"
-Write-Host "  2) 只測試現有 WireGuard 連線，不改設定"
-Write-Host "  3) 新增一台 client 到既有 server，不重寫 server 設定"
-Write-Host "  4) 建立 server + Android root client CLI 部署"
+Write-Host "  2) 建立 server + Android root client CLI 部署"
 $Mode = Ask-Default "請選擇模式" "1"
 
-if ($Mode -notin @("1", "2", "3", "4")) {
-    throw "無效模式，請輸入 1、2、3 或 4。"
+if ($Mode -notin @("1", "2")) {
+    throw "無效模式，請輸入 1 或 2。"
+}
+
+if ($Mode -eq "2") {
+    $Mode = "4"
 }
 
 
@@ -548,8 +550,14 @@ $prepKeys = "mkdir -p /etc/wireguard/keys; chmod 700 /etc/wireguard /etc/wiregua
 Sudo-Remote $ServerIp $ServerUser $ServerPassword $prepKeys
 Sudo-Remote $ClientIp $ClientUser $ClientPassword $prepKeys
 
-$genServerKey = "umask 077; if [ ! -s /etc/wireguard/keys/server.key ]; then wg genkey > /etc/wireguard/keys/server.key; wg pubkey < /etc/wireguard/keys/server.key > /etc/wireguard/keys/server.pub; fi"
-$genClientKey = "umask 077; if [ ! -s /etc/wireguard/keys/client.key ]; then wg genkey > /etc/wireguard/keys/client.key; wg pubkey < /etc/wireguard/keys/client.key > /etc/wireguard/keys/client.pub; fi"
+Write-Host "停止既有 WireGuard 介面並重建 key..."
+Run-Remote-AllowFail $ServerIp $ServerUser $ServerPassword "printf '%s\n' '$ServerPassword' | sudo -S -p '' wg-quick down $WgIf >/dev/null 2>&1 || true"
+Run-Remote-AllowFail $ClientIp $ClientUser $ClientPassword "printf '%s\n' '$ClientPassword' | sudo -S -p '' wg-quick down $WgIf >/dev/null 2>&1 || true"
+Run-Remote-AllowFail $ServerIp $ServerUser $ServerPassword "printf '%s\n' '$ServerPassword' | sudo -S -p '' ip link delete $WgIf >/dev/null 2>&1 || true"
+Run-Remote-AllowFail $ClientIp $ClientUser $ClientPassword "printf '%s\n' '$ClientPassword' | sudo -S -p '' ip link delete $WgIf >/dev/null 2>&1 || true"
+
+$genServerKey = "umask 077; wg genkey > /etc/wireguard/keys/server.key; wg pubkey < /etc/wireguard/keys/server.key > /etc/wireguard/keys/server.pub; chmod 600 /etc/wireguard/keys/server.key /etc/wireguard/keys/server.pub"
+$genClientKey = "umask 077; wg genkey > /etc/wireguard/keys/client.key; wg pubkey < /etc/wireguard/keys/client.key > /etc/wireguard/keys/client.pub; chmod 600 /etc/wireguard/keys/client.key /etc/wireguard/keys/client.pub"
 Sudo-Remote $ServerIp $ServerUser $ServerPassword $genServerKey
 Sudo-Remote $ClientIp $ClientUser $ClientPassword $genClientKey
 
@@ -615,6 +623,8 @@ Run-Remote-AllowFail $ClientIp $ClientUser $ClientPassword "printf '%s\n' '$Clie
 Write-Host "重啟 WireGuard 測試介面..."
 Run-Remote-AllowFail $ServerIp $ServerUser $ServerPassword "printf '%s\n' '$ServerPassword' | sudo -S -p '' wg-quick down $WgIf >/dev/null 2>&1 || true"
 Run-Remote-AllowFail $ClientIp $ClientUser $ClientPassword "printf '%s\n' '$ClientPassword' | sudo -S -p '' wg-quick down $WgIf >/dev/null 2>&1 || true"
+Run-Remote-AllowFail $ServerIp $ServerUser $ServerPassword "printf '%s\n' '$ServerPassword' | sudo -S -p '' ip link delete $WgIf >/dev/null 2>&1 || true"
+Run-Remote-AllowFail $ClientIp $ClientUser $ClientPassword "printf '%s\n' '$ClientPassword' | sudo -S -p '' ip link delete $WgIf >/dev/null 2>&1 || true"
 
 Write-Host "啟動 server..."
 Run-Remote $ServerIp $ServerUser $ServerPassword "printf '%s\n' '$ServerPassword' | sudo -S -p '' env WG_IF=$WgIf WG_TEST=no /home/$ServerUser/wireguard_check_start.sh server $ClientVpnIp"
