@@ -13,7 +13,9 @@
     [string]$ClientVpnCidr = "10.66.66.2/32",
     [string]$ClientVpnIp = "10.66.66.2",
     [string]$ListenPort = "51820",
-    [string]$WgIf = "wg0"
+    [string]$WgIf = "wg0",
+    [string]$Mode = "",
+    [switch]$NonInteractive
 )
 
 $ErrorActionPreference = "Stop"
@@ -136,6 +138,9 @@ function Trust-HostKey-FromOutput {
     Write-Host "SSH host key needs confirmation for $RemoteHost"
     Write-Host "Fingerprint: $fingerprint"
     Write-Host "If this IP was reinstalled or changed to a new device, this is expected."
+    if ($NonInteractive) {
+        throw "SSH host key confirmation is required for $RemoteHost. Fingerprint: $fingerprint"
+    }
     $answer = Read-Host "Trust this host key and continue? [y/N]"
     if ($answer -in @("y", "Y", "yes", "YES")) {
         $script:HostKeyMap[$RemoteHost] = $fingerprint
@@ -315,7 +320,7 @@ Write-Host ""
 Write-Host "模式："
 Write-Host "  1) 部署 / 重新部署 WireGuard"
 Write-Host "  2) 建立 server + Android root client CLI 部署"
-$Mode = Ask-Default "請選擇模式" "1"
+if (-not $Mode) { $Mode = Ask-Default "請選擇模式" "1" }
 
 if ($Mode -notin @("1", "2")) {
     throw "無效模式，請輸入 1 或 2。"
@@ -338,11 +343,11 @@ if ($Mode -eq "4") {
 if (-not $ServerIp) { $ServerIp = Ask-Ip "Server SSH IP (existing VPN server machine)" }
 if (-not $ServerUser) { $ServerUser = Ask-Default "Server SSH User" "p" }
 if (-not $ServerPassword) { $ServerPassword = Ask-Default "Server SSH Password" "p" }
-if (-not $ServerHostKey) { $ServerHostKey = Ask-Default "Server SSH HostKey optional, Enter to skip" "" }
+if (-not $ServerHostKey -and -not $NonInteractive) { $ServerHostKey = Ask-Default "Server SSH HostKey optional, Enter to skip" "" }
 if (-not $ClientIp) { $ClientIp = Ask-Ip "Client SSH IP (client machine to configure, not the server)" }
 if (-not $ClientUser) { $ClientUser = Ask-Default "Client SSH User" "p" }
 if (-not $ClientPassword) { $ClientPassword = Ask-Default "Client SSH Password" "p" }
-if (-not $ClientHostKey) { $ClientHostKey = Ask-Default "Client SSH HostKey optional, Enter to skip" "" }
+if (-not $ClientHostKey -and -not $NonInteractive) { $ClientHostKey = Ask-Default "Client SSH HostKey optional, Enter to skip" "" }
 
 if ($ServerIp -match "xx|XX" -or $ServerIp -notmatch "^\d{1,3}(\.\d{1,3}){3}$") {
     throw "ServerIp 必須是實際 IP，例如 192.168.23.177，不可使用 192.168.xx.xx。"
@@ -360,7 +365,7 @@ Write-Host "  Server SSH target: $ServerUser@$ServerIp"
 Write-Host "  Client SSH target: $ClientUser@$ClientIp"
 Write-Host ""
 Write-Host "請確認 Server 是 VPN server 那台，Client 是要被設定成 VPN client 的另一台。"
-$roleConfirm = Ask-Default "角色正確？輸入 y 繼續" "y"
+$roleConfirm = if ($NonInteractive) { "y" } else { Ask-Default "角色正確？輸入 y 繼續" "y" }
 if ($roleConfirm -notin @("y", "Y", "yes", "YES")) {
     Write-Host "已取消。請重新執行並修正 Server/Client IP。"
     exit 0
@@ -427,7 +432,7 @@ if ($Mode -eq "3") {
     Run-Remote $ClientIp $ClientUser $ClientPassword "echo client-ok; uname -m"
 
     Write-Host "確認工具與既有 server 設定..."
-    $installCmd = "if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y wireguard iptables wireguard-go || apt-get install -y wireguard iptables; else echo 'Only apt-get Linux is supported by this deploy script'; exit 1; fi"
+    $installCmd = "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools iptables || exit 1; if [ -e /sys/module/wireguard ] || modprobe wireguard >/dev/null 2>&1; then echo 'WireGuard kernel module is available'; else echo 'WireGuard kernel module is unavailable; installing wireguard-go'; DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-go || exit 1; if command -v wireguard-go >/dev/null 2>&1; then echo 'Userspace backend: wireguard-go'; elif command -v wireguard >/dev/null 2>&1; then echo 'Userspace backend: wireguard'; else echo 'wireguard-go installation verification failed: neither wireguard-go nor wireguard executable was found'; exit 1; fi; fi; else echo 'Only apt-get Linux is supported by this deploy script'; exit 1; fi"
     Sudo-Remote $ClientIp $ClientUser $ClientPassword $installCmd
     Sudo-Remote $ServerIp $ServerUser $ServerPassword "command -v wg >/dev/null 2>&1 || exit 1; test -f /etc/wireguard/$WgIf.conf; test -s /etc/wireguard/keys/server.key || exit 1; if [ ! -s /etc/wireguard/keys/server.pub ]; then wg pubkey < /etc/wireguard/keys/server.key > /etc/wireguard/keys/server.pub; fi"
     $ServerListenPort = Get-Remote-Text $ServerIp $ServerUser $ServerPassword "printf '%s\n' '$ServerPassword' | sudo -S -p '' sed -n 's/^ListenPort *= *//p' /etc/wireguard/$WgIf.conf | tail -n 1"
@@ -508,13 +513,16 @@ if ($Mode -ne "1") {
     throw "無效模式，請輸入 1、2 或 3。"
 }
 
-$ListenPort = Ask-Default "WireGuard Listen Port" $ListenPort
-$VpnNetwork = Ask-Default "VPN Network" $VpnNetwork
-$ServerVpnCidr = Ask-Cidr-Default "Server VPN CIDR" $ServerVpnCidr
-$ClientVpnCidr = Ask-Cidr-Default "Client VPN CIDR" $ClientVpnCidr
+if (-not $NonInteractive) {
+    $ListenPort = Ask-Default "WireGuard Listen Port" $ListenPort
+    $VpnNetwork = Ask-Default "VPN Network" $VpnNetwork
+    $ServerVpnCidr = Ask-Cidr-Default "Server VPN CIDR" $ServerVpnCidr
+    $ClientVpnCidr = Ask-Cidr-Default "Client VPN CIDR" $ClientVpnCidr
+}
 $ServerVpnIp = ($ServerVpnCidr -split "/")[0]
 $ClientVpnIp = ($ClientVpnCidr -split "/")[0]
-$Endpoint = Ask-Default "Client connect endpoint" "${ServerIp}:$ListenPort"
+if (-not $Endpoint) { $Endpoint = "${ServerIp}:$ListenPort" }
+if (-not $NonInteractive) { $Endpoint = Ask-Default "Client connect endpoint" $Endpoint }
 
 Write-Host ""
 Write-Host "部署設定："
@@ -524,7 +532,7 @@ Write-Host "  Endpoint: $Endpoint"
 Write-Host "  不會設定開機自動啟動"
 Write-Host ""
 
-$confirm = Ask-Default "開始部署？輸入 y 繼續" "y"
+$confirm = if ($NonInteractive) { "y" } else { Ask-Default "開始部署？輸入 y 繼續" "y" }
 if ($confirm -notin @("y", "Y", "yes", "YES")) {
     Write-Host "已取消。"
     exit 0
@@ -541,7 +549,7 @@ Run-Remote $ServerIp $ServerUser $ServerPassword "echo server-ok; uname -m"
 Run-Remote $ClientIp $ClientUser $ClientPassword "echo client-ok; uname -m"
 
 Write-Host "安裝 WireGuard 工具..."
-$installCmd = "if command -v apt-get >/dev/null 2>&1; then apt-get update && apt-get install -y wireguard iptables wireguard-go || apt-get install -y wireguard iptables; else echo 'Only apt-get Linux is supported by this deploy script'; exit 1; fi"
+$installCmd = "if command -v apt-get >/dev/null 2>&1; then apt-get update && DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-tools iptables || exit 1; if [ -e /sys/module/wireguard ] || modprobe wireguard >/dev/null 2>&1; then echo 'WireGuard kernel module is available'; else echo 'WireGuard kernel module is unavailable; installing wireguard-go'; DEBIAN_FRONTEND=noninteractive apt-get install -y wireguard-go || exit 1; if command -v wireguard-go >/dev/null 2>&1; then echo 'Userspace backend: wireguard-go'; elif command -v wireguard >/dev/null 2>&1; then echo 'Userspace backend: wireguard'; else echo 'wireguard-go installation verification failed: neither wireguard-go nor wireguard executable was found'; exit 1; fi; fi; else echo 'Only apt-get Linux is supported by this deploy script'; exit 1; fi"
 Sudo-Remote $ServerIp $ServerUser $ServerPassword $installCmd
 Sudo-Remote $ClientIp $ClientUser $ClientPassword $installCmd
 

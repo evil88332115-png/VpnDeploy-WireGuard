@@ -16,7 +16,8 @@ param(
     [string]$AndroidVpnCidr = "10.66.66.3/32",
     [string]$Endpoint = "",
     [string]$AllowedIPs = "10.66.66.0/24",
-    [string]$ClientName = "android-root"
+    [string]$ClientName = "android-root",
+    [switch]$NonInteractive
 )
 
 $ErrorActionPreference = "Stop"
@@ -69,10 +70,10 @@ function Get-PlinkArgs {
     if ($Port -ne 22) {
         $args += @("-P", ([string]$Port))
     }
-    if ($script:HostKeyMap.ContainsKey($key) -and $script:HostKeyMap[$key]) {
-        $args += @("-hostkey", $script:HostKeyMap[$key])
-    } elseif (-not [string]::IsNullOrWhiteSpace($HostKey)) {
+    if (-not [string]::IsNullOrWhiteSpace($HostKey)) {
         $args += @("-hostkey", $HostKey)
+    } elseif ($script:HostKeyMap.ContainsKey($key) -and $script:HostKeyMap[$key]) {
+        $args += @("-hostkey", $script:HostKeyMap[$key])
     }
     return $args
 }
@@ -95,6 +96,9 @@ function Trust-HostKeyFromOutput {
     Write-Host "SSH host key needs confirmation for $RemoteHost`:$Port" -ForegroundColor Yellow
     Write-Host "Fingerprint: $fingerprint" -ForegroundColor Yellow
     Write-Host "If this IP was reinstalled or changed to a new device, this can be expected."
+    if ($NonInteractive) {
+        throw "SSH host key confirmation is required for $RemoteHost`:$Port. Fingerprint: $fingerprint"
+    }
     $answer = Read-Host "Trust this host key and continue? [y/N]"
     if ($answer -in @("y", "Y", "yes", "YES")) {
         $script:HostKeyMap[(Get-HostKeyMapKey $RemoteHost $Port)] = $fingerprint
@@ -275,13 +279,28 @@ Write-Host "Android WireGuard Deploy"
 Write-Host "Mode: create/update Ubuntu server + add Android CLI client"
 Write-Host ""
 
-if (-not $ServerIp) { $ServerIp = Read-IpValue "Server SSH IP" }
-$ServerUser = Read-Value "Server SSH User" $ServerUser $true
-$ServerPassword = Read-Value "Server SSH Password" $ServerPassword $true
+if ($NonInteractive) {
+    foreach ($requiredValue in @{
+        ServerIp       = $ServerIp
+        ServerUser     = $ServerUser
+        ServerPassword = $ServerPassword
+        AndroidIp      = $AndroidIp
+        AndroidUser    = $AndroidUser
+        AndroidPassword = $AndroidPassword
+    }.GetEnumerator()) {
+        if ([string]::IsNullOrWhiteSpace([string]$requiredValue.Value)) {
+            throw "$($requiredValue.Key) is required in non-interactive mode."
+        }
+    }
+} else {
+    if (-not $ServerIp) { $ServerIp = Read-IpValue "Server SSH IP" }
+    $ServerUser = Read-Value "Server SSH User" $ServerUser $true
+    $ServerPassword = Read-Value "Server SSH Password" $ServerPassword $true
 
-if (-not $AndroidIp) { $AndroidIp = Read-IpValue "Android SSH IP" }
-$AndroidUser = Read-Value "Android SSH User" $AndroidUser $true
-$AndroidPassword = Read-Value "Android SSH Password" $AndroidPassword $true
+    if (-not $AndroidIp) { $AndroidIp = Read-IpValue "Android SSH IP" }
+    $AndroidUser = Read-Value "Android SSH User" $AndroidUser $true
+    $AndroidPassword = Read-Value "Android SSH Password" $AndroidPassword $true
+}
 if (-not $Endpoint) { $Endpoint = "$ServerIp`:$ListenPort" }
 if ($Endpoint -match '^\d+$') {
     $Endpoint = "$ServerIp`:$Endpoint"
@@ -305,7 +324,7 @@ Write-Host "  Endpoint: $Endpoint"
 Write-Host "  AllowedIPs: $AllowedIPs"
 Write-Host "  Interface: $WgIf"
 Write-Host ""
-$confirm = Read-Value "Start deployment? Type y to continue" "y" $true
+$confirm = if ($NonInteractive) { "y" } else { Read-Value "Start deployment? Type y to continue" "y" $true }
 if ($confirm -notmatch '^[Yy]$') {
     Write-Host "Cancelled."
     exit 0

@@ -77,6 +77,7 @@ wg_quick_up_auto() {
     impl="$(userspace_impl || true)"
     if [ -z "$impl" ]; then
         echo "[FAIL] WireGuard kernel module is unavailable and no userspace implementation was found."
+        echo "[FAIL] Install it with: sudo apt-get install -y wireguard-go"
         return 1
     fi
 
